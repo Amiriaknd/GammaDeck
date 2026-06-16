@@ -19,6 +19,8 @@ pub enum AppError {
     TargetDisplayRequired,
     #[error("profile was not found")]
     ProfileNotFound,
+    #[error("default profile cannot be deleted")]
+    ProtectedProfile,
     #[cfg_attr(not(windows), allow(dead_code))]
     #[error("display was not found: {0}")]
     DisplayNotFound(String),

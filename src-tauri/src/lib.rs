@@ -4,6 +4,8 @@ mod error;
 mod gamma_curve;
 mod model;
 
+const DEFAULT_PROFILE_ID: &str = "default";
+
 use std::{
     collections::HashSet,
     str::FromStr,
@@ -61,6 +63,10 @@ fn save_profile(app: AppHandle, state: State<'_, AppState>, profile: Profile) ->
 
 #[tauri::command]
 fn delete_profile(app: AppHandle, state: State<'_, AppState>, profile_id: String) -> AppResult<AppConfig> {
+    if profile_id == DEFAULT_PROFILE_ID {
+        return Err(AppError::ProtectedProfile);
+    }
+
     let mut config = lock(&state.config, "configuration")?;
     let original_len = config.profiles.len();
     config.profiles.retain(|profile| profile.id != profile_id);
@@ -241,6 +247,7 @@ fn register_hotkeys(app: &AppHandle, state: &AppState, config: &AppConfig) -> Ap
                     return;
                 }
 
+                let _ = app.emit("profile-hotkey", profile_id.clone());
                 let state = app.state::<AppState>();
                 match apply_profile_by_id(&state, &profile_id) {
                     Ok(result) => {

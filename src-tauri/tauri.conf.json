@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "GammaDeck",
-        "width": 460,
-        "height": 690,
-        "minWidth": 420,
-        "minHeight": 620,
+        "width": 800,
+        "height": 380,
+        "minWidth": 800,
+        "minHeight": 380,
         "resizable": true
       }
     ],
