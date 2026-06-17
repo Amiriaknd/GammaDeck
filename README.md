@@ -19,6 +19,30 @@ This repository currently contains the first scaffolded MVP:
 
 Real gamma changes are only implemented for Windows. macOS and Linux can run the app shell, but gamma apply/reset actions report unsupported behavior for now.
 
+## Windows Portable Release
+
+GammaDeck is currently distributed as a portable Windows zip:
+
+1. Download `GammaDeck-windows-x64-portable.zip` from a GitHub release.
+2. Unzip it anywhere.
+3. Run `GammaDeck.exe` directly.
+
+There is no installer at this stage. This keeps the package simple and avoids requiring administrator access for the app itself.
+
+### WebView2 Runtime Requirement
+
+GammaDeck is built with Tauri, so the Windows build uses Microsoft Edge WebView2 Runtime for the app window. Most Windows 10/11 systems already have WebView2 installed.
+
+If WebView2 Runtime is missing, GammaDeck may fail before the UI appears. Depending on the machine, Windows/Tauri may show a WebView2-related startup error, a "failed to create webview" error, or the app may close immediately.
+
+Install Microsoft Edge WebView2 Runtime from Microsoft, then run GammaDeck again:
+
+- WebView2 Runtime download page: <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>
+- For normal online installs, use the Evergreen Bootstrapper.
+- For offline machines, use the Evergreen Standalone Installer for your CPU architecture, usually x64.
+
+Microsoft's WebView2 distribution guidance recommends checking for the runtime before creating a WebView2, and either installing it or redirecting users to the Microsoft download page. GammaDeck does not currently ship its own WebView2 installer; a native pre-launch check may be added later if missing-runtime reports become common.
+
 ## Features
 
 - Manage multiple gamma profiles.
@@ -76,11 +100,13 @@ Run the app during local development:
 pnpm tauri dev
 ```
 
-Build the desktop app:
+Build a portable Windows executable:
 
 ```bash
-pnpm tauri build
+pnpm tauri build --no-bundle
 ```
+
+The portable executable is written to `src-tauri/target/release/gammadeck.exe` on Windows. The GitHub release workflow packages it as `GammaDeck.exe` inside `GammaDeck-windows-x64-portable.zip`.
 
 ## Architecture
 

@@ -40,13 +40,34 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and draft release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build portable executable
+        run: pnpm tauri build --no-bundle
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item src-tauri/target/release/gammadeck.exe release/GammaDeck.exe
+          @"
+          GammaDeck portable build
+
+          Run GammaDeck.exe directly.
+
+          Requirement: Microsoft Edge WebView2 Runtime. Most Windows 10/11 systems already have it.
+          If the app does not start, install WebView2 Runtime from Microsoft:
+          https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+          "@ | Set-Content -Encoding UTF8 release/README.txt
+          Compress-Archive -Path release/* -DestinationPath GammaDeck-windows-x64-portable.zip -Force
+
+      - name: Create draft release and upload portable zip
+        if: startsWith(github.ref, 'refs/tags/app-v')
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: app-v__VERSION__
-          releaseName: "GammaDeck v__VERSION__"
-          releaseBody: "See assets below to download GammaDeck."
-          releaseDraft: true
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release view $env:TAG_NAME *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG_NAME --draft --title "GammaDeck $env:TAG_NAME" --notes "Portable Windows build. Download and unzip GammaDeck-windows-x64-portable.zip, then run GammaDeck.exe."
+          }
+          gh release upload $env:TAG_NAME GammaDeck-windows-x64-portable.zip --clobber
