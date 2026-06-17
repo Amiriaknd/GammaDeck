@@ -1,16 +1,14 @@
 use std::{collections::HashMap, ffi::c_void, iter};
 
 use windows::{
-    core::{PCWSTR, PWSTR},
+    core::PCWSTR,
     Win32::{
         Foundation::BOOL,
         Graphics::Gdi::{
-            CreateDCW, DeleteDC, GetDeviceGammaRamp, SetDeviceGammaRamp, HDC,
+            CreateDCW, DeleteDC, EnumDisplayDevicesW, DISPLAY_DEVICEW, DISPLAY_DEVICE_ACTIVE,
+            DISPLAY_DEVICE_PRIMARY_DEVICE, HDC,
         },
-        UI::WindowsAndMessaging::{
-            EnumDisplayDevicesW, DISPLAY_DEVICEW, DISPLAY_DEVICE_ACTIVE,
-            DISPLAY_DEVICE_PRIMARY_DEVICE,
-        },
+        UI::ColorSystem::{GetDeviceGammaRamp, SetDeviceGammaRamp},
     },
 };
 
@@ -110,13 +108,18 @@ fn enumerate_displays() -> AppResult<Vec<DisplayInfo>> {
     }
 
     if displays.is_empty() {
-        return Err(AppError::Backend("no active displays were reported by Windows".to_string()));
+        return Err(AppError::Backend(
+            "no active displays were reported by Windows".to_string(),
+        ));
     }
 
     Ok(displays)
 }
 
-fn with_display_dc<T>(display_id: &str, operation: impl FnOnce(HDC) -> AppResult<T>) -> AppResult<T> {
+fn with_display_dc<T>(
+    display_id: &str,
+    operation: impl FnOnce(HDC) -> AppResult<T>,
+) -> AppResult<T> {
     let display_name = to_wide_null(display_id);
     let dc = unsafe {
         CreateDCW(
@@ -127,14 +130,16 @@ fn with_display_dc<T>(display_id: &str, operation: impl FnOnce(HDC) -> AppResult
         )
     };
 
-    if dc.0 == 0 {
+    if dc.0.is_null() {
         return Err(AppError::DisplayNotFound(display_id.to_string()));
     }
 
     let result = operation(dc);
     let deleted = unsafe { DeleteDC(dc) };
     if !deleted.as_bool() {
-        return Err(AppError::Backend("failed to release display device context".to_string()));
+        return Err(AppError::Backend(
+            "failed to release display device context".to_string(),
+        ));
     }
 
     result
@@ -159,8 +164,11 @@ fn write_ramp(dc: HDC, ramp: &GammaRamp) -> AppResult<()> {
 }
 
 fn ramp_to_raw(ramp: &GammaRamp) -> AppResult<[[u16; RAMP_SIZE]; 3]> {
-    if ramp.red.len() != RAMP_SIZE || ramp.green.len() != RAMP_SIZE || ramp.blue.len() != RAMP_SIZE {
-        return Err(AppError::Backend("gamma ramp must contain 256 values per channel".to_string()));
+    if ramp.red.len() != RAMP_SIZE || ramp.green.len() != RAMP_SIZE || ramp.blue.len() != RAMP_SIZE
+    {
+        return Err(AppError::Backend(
+            "gamma ramp must contain 256 values per channel".to_string(),
+        ));
     }
 
     let mut raw = [[0u16; RAMP_SIZE]; 3];
@@ -176,7 +184,13 @@ fn ramps_are_close(expected: &GammaRamp, actual: &GammaRamp) -> bool {
         .iter()
         .chain(expected.green.iter())
         .chain(expected.blue.iter())
-        .zip(actual.red.iter().chain(actual.green.iter()).chain(actual.blue.iter()))
+        .zip(
+            actual
+                .red
+                .iter()
+                .chain(actual.green.iter())
+                .chain(actual.blue.iter()),
+        )
         .all(|(left, right)| left.abs_diff(*right) <= 512)
 }
 
@@ -189,7 +203,10 @@ fn bool_result(ok: BOOL, message: &str) -> AppResult<()> {
 }
 
 fn wide_array_to_string(raw: &[u16]) -> String {
-    let end = raw.iter().position(|value| *value == 0).unwrap_or(raw.len());
+    let end = raw
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(raw.len());
     String::from_utf16_lossy(&raw[..end])
 }
 
