@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_RETRY: "10"
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -39,6 +43,25 @@ jobs:
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Fetch Rust dependencies
+        shell: pwsh
+        run: |
+          $attempts = 5
+          for ($i = 1; $i -le $attempts; $i++) {
+            cargo fetch --manifest-path src-tauri/Cargo.toml
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+
+            if ($i -eq $attempts) {
+              exit $LASTEXITCODE
+            }
+
+            $delay = 15 * $i
+            Write-Host "cargo fetch failed; retrying in $delay seconds ($i/$attempts)"
+            Start-Sleep -Seconds $delay
+          }
 
       - name: Build portable executable
         run: pnpm tauri build --no-bundle
