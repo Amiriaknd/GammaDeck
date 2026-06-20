@@ -108,7 +108,7 @@ pnpm tauri build --no-bundle
 
 The portable executable is written to `src-tauri/target/release/gammadeck.exe` on Windows. The GitHub release workflow packages it as `GammaDeck.exe` inside `GammaDeck-windows-x64-portable.zip`.
 
-Release builds store `GammaDeck.config.json` beside `GammaDeck.exe` so the portable folder is self-contained. Development builds use Tauri's app config directory to avoid mixing local dev state into build output.
+Release builds store `GammaDeck.config.json` and WebView2 data beside `GammaDeck.exe` so the portable folder is self-contained. Development builds use Tauri's app config directory to avoid mixing local dev state into build output.
 
 ## Architecture
 
@@ -152,4 +152,4 @@ Each profile contains:
 - Linked or per-channel RGB settings
 - Optional global hotkey
 
-Profiles are persisted in the app config directory as JSON.
+Profiles are persisted as `GammaDeck.config.json`. Release builds write it beside `GammaDeck.exe`; development builds write it to Tauri's app config directory.

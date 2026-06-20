@@ -75,6 +75,8 @@ jobs:
           GammaDeck portable build
 
           Run GammaDeck.exe directly.
+          GammaDeck.config.json and GammaDeck.data are created beside GammaDeck.exe.
+          Delete the whole extracted folder to remove app data.
 
           Requirement: Microsoft Edge WebView2 Runtime. Most Windows 10/11 systems already have it.
           If the app does not start, install WebView2 Runtime from Microsoft:

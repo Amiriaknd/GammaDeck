@@ -24,6 +24,7 @@ pub enum AppError {
     #[cfg_attr(not(windows), allow(dead_code))]
     #[error("display was not found: {0}")]
     DisplayNotFound(String),
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("gamma control is unsupported on this platform")]
     UnsupportedPlatform,
     #[error("gamma backend failed: {0}")]

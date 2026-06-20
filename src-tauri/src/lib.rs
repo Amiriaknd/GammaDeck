@@ -22,7 +22,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Emitter, Manager, State, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -416,6 +416,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            setup_main_window(app)?;
+
             let config_dir = config_dir(app)?;
             let config_store = ConfigStore::new(config_dir);
             let config = config_store.load()?;
@@ -451,6 +453,24 @@ pub fn run() {
         .expect("failed to run GammaDeck");
 }
 
+fn setup_main_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let window_config = app
+        .config()
+        .app
+        .windows
+        .first()
+        .ok_or("main window configuration is unavailable")?;
+    #[cfg(not(debug_assertions))]
+    let builder = WebviewWindowBuilder::from_config(app, window_config)?
+        .data_directory(executable_dir()?.join("GammaDeck.data"));
+
+    #[cfg(debug_assertions)]
+    let builder = WebviewWindowBuilder::from_config(app, window_config)?;
+
+    builder.build()?;
+    Ok(())
+}
+
 fn config_dir(_app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     {
@@ -459,10 +479,15 @@ fn config_dir(_app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> 
 
     #[cfg(not(debug_assertions))]
     {
-        let exe_path = std::env::current_exe()?;
-        exe_path
-            .parent()
-            .map(PathBuf::from)
-            .ok_or_else(|| "executable directory is unavailable".into())
+        executable_dir()
     }
+}
+
+#[cfg(not(debug_assertions))]
+fn executable_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let exe_path = std::env::current_exe()?;
+    exe_path
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| "executable directory is unavailable".into())
 }
