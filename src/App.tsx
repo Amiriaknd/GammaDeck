@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
@@ -82,6 +81,8 @@ export default function App() {
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const bootedRef = useRef(false);
+  const autosaveRevisionRef = useRef(0);
+  const configRef = useRef(config);
 
   const selectedDisplay = useMemo(
     () => displays.find((display) => display.id === draft.targetDisplayId) ?? null,
@@ -91,6 +92,10 @@ export default function App() {
   const profiles = useMemo(() => sortedProfiles(config.profiles), [config.profiles]);
   const settings = draft.channelMode === "linked" ? draft.linked : draft.red;
   const visibleError = error && !isUnsupportedGammaError(error) ? error : null;
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,29 +137,35 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const unlisten = Promise.all([
-      listen<string>("profile-hotkey", (event) => {
-        setConfig((current) => {
-          const profile = current.profiles.find((item) => item.id === event.payload);
-          if (profile) {
-            setDraft(cloneProfile(profile));
-            setDirtyDraft(false);
-            setEditingProfileId(null);
-          }
-          return current;
-        });
-      }),
-      listen<ApplyResult>("profile-applied", (event) => {
-        setStatus(`Applied ${event.payload.displayId}`);
-        setError(null);
-      }),
-      listen<string>("profile-apply-error", (event) => {
-        setError(event.payload);
-      }),
-    ]);
+    const onHotkey = (event: Event) => {
+      const profileId = (event as CustomEvent<string>).detail;
+      devLog("dom profile-hotkey", profileId);
+      syncAppliedProfile(profileId);
+    };
+
+    const onApplied = (event: Event) => {
+      const result = (event as CustomEvent<ApplyResult>).detail;
+      devLog("dom profile-applied", result);
+      syncAppliedProfile(result.profileId);
+      setStatus(`Applied ${result.displayId}`);
+      setError(null);
+    };
+
+    const onApplyError = (event: Event) => {
+      const message = (event as CustomEvent<string>).detail;
+      devLog("dom profile-apply-error", message);
+      setError(message);
+    };
+
+    window.addEventListener("gammadeck-profile-hotkey", onHotkey);
+    window.addEventListener("gammadeck-profile-applied", onApplied);
+    window.addEventListener("gammadeck-profile-apply-error", onApplyError);
+    devLog("dom listeners registered");
 
     return () => {
-      unlisten.then((callbacks) => callbacks.forEach((callback) => callback()));
+      window.removeEventListener("gammadeck-profile-hotkey", onHotkey);
+      window.removeEventListener("gammadeck-profile-applied", onApplied);
+      window.removeEventListener("gammadeck-profile-apply-error", onApplyError);
     };
   }, []);
 
@@ -164,30 +175,70 @@ export default function App() {
     }
 
     const profile = cloneProfile(draft);
+    const revision = ++autosaveRevisionRef.current;
+    let cancelled = false;
+    const isCurrentAutosave = () => !cancelled && revision === autosaveRevisionRef.current;
+
     const timeout = window.setTimeout(async () => {
       try {
         const saved = await api.saveProfile(profile);
+        if (!isCurrentAutosave()) {
+          return;
+        }
+
         setConfig(saved);
         setStatus("Auto-saved");
 
         if (selectedDisplay?.isSupported) {
           await api.applyDraftProfile(profile);
+          if (!isCurrentAutosave()) {
+            return;
+          }
+
           setStatus("Auto-saved · Preview applied");
         }
 
         setError(null);
         setDirtyDraft(false);
       } catch (caught) {
-        setError(String(caught));
+        if (isCurrentAutosave()) {
+          setError(String(caught));
+        }
       }
     }, 280);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
   }, [dirtyDraft, draft, selectedDisplay?.isSupported]);
 
   function updateDraft(updater: (profile: Profile) => Profile) {
     setDraft((current) => updater(cloneProfile(current)));
     setDirtyDraft(true);
+  }
+
+  function syncAppliedProfile(profileId: string | null) {
+    devLog("syncAppliedProfile", profileId);
+    if (!profileId) {
+      return;
+    }
+
+    autosaveRevisionRef.current += 1;
+    setDirtyDraft(false);
+    setEditingProfileId(null);
+
+    const localProfile = configRef.current.profiles.find((profile) => profile.id === profileId);
+    if (localProfile) {
+      devLog("syncAppliedProfile local match", { id: localProfile.id, name: localProfile.name });
+      setDraft(cloneProfile(localProfile));
+      setConfig((current) =>
+        current.selectedProfileId === profileId ? current : { ...current, selectedProfileId: profileId },
+      );
+      return;
+    }
+
+    devLog("syncAppliedProfile local miss", profileId);
   }
 
   function updateChannel(key: keyof ChannelSettings, value: number, channelName?: "red" | "green" | "blue") {
@@ -354,8 +405,9 @@ export default function App() {
           <label className="field">
             <span>Hotkey</span>
             <input
+              className="hotkey-input"
               value={draft.hotkey ?? ""}
-              placeholder="Control+Alt+Digit1"
+              placeholder="Click and press keys"
               onChange={(event) =>
                 updateDraft((profile) => ({ ...profile, hotkey: event.target.value || null }))
               }
@@ -588,18 +640,153 @@ function RangeRow({
           value={value}
           onChange={(event) => onChange(Number(event.target.value))}
         />
-        <input
-          className="number-input"
-          type="number"
+        <NumberInput
           min={min}
           max={max}
           step={step}
-          value={value.toFixed(2)}
-          onChange={(event) => onChange(Number(event.target.value))}
+          value={value}
+          onChange={onChange}
         />
       </span>
     </label>
   );
+}
+
+function NumberInput({
+  min,
+  max,
+  step,
+  value,
+  onChange,
+}: {
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [text, setText] = useState(formatNumber(value, step));
+  const [isEditing, setIsEditing] = useState(false);
+  const skipNextBlurCommitRef = useRef(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setText(formatNumber(value, step));
+    }
+  }, [isEditing, step, value]);
+
+  function commit(nextText = text) {
+    const parsed = parseNumberInput(nextText);
+    const nextValue = parsed === null ? value : clamp(roundToStep(parsed, step), min, max);
+    setIsEditing(false);
+    setText(formatNumber(nextValue, step));
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+  }
+
+  function revert() {
+    setIsEditing(false);
+    setText(formatNumber(value, step));
+  }
+
+  function nudge(direction: 1 | -1, multiplier: number) {
+    const nextValue = clamp(roundToStep(value + direction * step * multiplier, step), min, max);
+    setText(formatNumber(nextValue, step));
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+  }
+
+  return (
+    <input
+      className="number-input"
+      type="text"
+      inputMode="decimal"
+      value={text}
+      aria-label={`${min} to ${max}`}
+      onFocus={(event) => {
+        setIsEditing(true);
+        event.currentTarget.select();
+      }}
+      onChange={(event) => {
+        const nextText = event.target.value;
+        setText(nextText);
+
+        const parsed = parseNumberInput(nextText);
+        if (parsed === null || parsed < min || parsed > max) {
+          return;
+        }
+
+        const nextValue = roundToStep(parsed, step);
+        if (nextValue !== value) {
+          onChange(nextValue);
+        }
+      }}
+      onBlur={() => {
+        if (skipNextBlurCommitRef.current) {
+          skipNextBlurCommitRef.current = false;
+          return;
+        }
+
+        commit();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+          return;
+        }
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          skipNextBlurCommitRef.current = true;
+          revert();
+          event.currentTarget.blur();
+          return;
+        }
+
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          const multiplier = event.shiftKey ? 10 : 1;
+          nudge(event.key === "ArrowUp" ? 1 : -1, multiplier);
+        }
+      }}
+    />
+  );
+}
+
+function parseNumberInput(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed === "-" || trimmed === "." || trimmed === "-.") {
+    return null;
+  }
+
+  if (!/^-?(?:\d+|\d*\.\d+|\d+\.)$/.test(trimmed)) {
+    return null;
+  }
+
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : null;
+}
+
+function formatNumber(value: number, step: number) {
+  return value.toFixed(decimalPlaces(step));
+}
+
+function roundToStep(value: number, step: number) {
+  const factor = 10 ** decimalPlaces(step);
+  return Math.round(value * factor) / factor;
+}
+
+function decimalPlaces(value: number) {
+  const [, fraction = ""] = value.toString().split(".");
+  return fraction.length;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function LutPreview({ profile }: { profile: Profile }) {
@@ -669,4 +856,11 @@ function statusText(status: string, dirtyDraft: boolean, selectedDisplay: Displa
 
 function isUnsupportedGammaError(message: string) {
   return message.toLowerCase().includes("gamma control is unsupported");
+}
+
+function devLog(message: string, data?: unknown) {
+  const env = (import.meta as unknown as { env?: { DEV?: boolean } }).env;
+  if (env?.DEV) {
+    console.info(`[GammaDeck] ${message}`, data);
+  }
 }

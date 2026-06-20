@@ -3,7 +3,14 @@ use std::{collections::HashMap, ffi::c_void, iter};
 use windows::{
     core::PCWSTR,
     Win32::{
-        Foundation::BOOL,
+        Devices::Display::{
+            DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+            DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+            DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO,
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME,
+            QDC_ONLY_ACTIVE_PATHS,
+        },
+        Foundation::{BOOL, ERROR_SUCCESS},
         Graphics::Gdi::{
             CreateDCW, DeleteDC, EnumDisplayDevicesW, DISPLAY_DEVICEW, DISPLAY_DEVICE_ACTIVE,
             DISPLAY_DEVICE_PRIMARY_DEVICE, HDC,
@@ -80,6 +87,7 @@ impl DisplayGammaBackend for WindowsGdiBackend {
 
 fn enumerate_displays() -> AppResult<Vec<DisplayInfo>> {
     let mut displays = Vec::new();
+    let monitor_names = display_config_monitor_names();
     let mut index = 0;
 
     loop {
@@ -95,10 +103,14 @@ fn enumerate_displays() -> AppResult<Vec<DisplayInfo>> {
 
         if device.StateFlags & DISPLAY_DEVICE_ACTIVE != 0 {
             let id = wide_array_to_string(&device.DeviceName);
-            let name = wide_array_to_string(&device.DeviceString);
+            let adapter_name = wide_array_to_string(&device.DeviceString);
+            let monitor_name = monitor_names
+                .get(&id)
+                .cloned()
+                .or_else(|| enum_display_monitor_name(&id));
             displays.push(DisplayInfo {
                 id: id.clone(),
-                name: if name.is_empty() { id } else { name },
+                name: display_name(&id, monitor_name.as_deref(), &adapter_name),
                 is_primary: device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE != 0,
                 is_supported: true,
             });
@@ -114,6 +126,135 @@ fn enumerate_displays() -> AppResult<Vec<DisplayInfo>> {
     }
 
     Ok(displays)
+}
+
+fn display_config_monitor_names() -> HashMap<String, String> {
+    let mut path_count = 0;
+    let mut mode_count = 0;
+    let sizes = unsafe {
+        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+    };
+    if sizes != ERROR_SUCCESS || path_count == 0 {
+        return HashMap::new();
+    }
+
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+    let queried = unsafe {
+        QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut path_count,
+            paths.as_mut_ptr(),
+            &mut mode_count,
+            modes.as_mut_ptr(),
+            None,
+        )
+    };
+    if queried != ERROR_SUCCESS {
+        return HashMap::new();
+    }
+
+    paths.truncate(path_count as usize);
+    let mut names = HashMap::new();
+    for path in paths {
+        let Some(source_name) =
+            display_config_source_name(path.sourceInfo.adapterId, path.sourceInfo.id)
+        else {
+            continue;
+        };
+        let Some(target_name) =
+            display_config_target_name(path.targetInfo.adapterId, path.targetInfo.id)
+        else {
+            continue;
+        };
+        names.insert(source_name, target_name);
+    }
+
+    names
+}
+
+fn display_config_source_name(
+    adapter_id: windows::Win32::Foundation::LUID,
+    source_id: u32,
+) -> Option<String> {
+    let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+            size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+            adapterId: adapter_id,
+            id: source_id,
+        },
+        ..Default::default()
+    };
+
+    let result = unsafe { DisplayConfigGetDeviceInfo(&mut source.header) };
+    if result != ERROR_SUCCESS.0 as i32 {
+        return None;
+    }
+
+    non_empty_wide_array_to_string(&source.viewGdiDeviceName)
+}
+
+fn display_config_target_name(
+    adapter_id: windows::Win32::Foundation::LUID,
+    target_id: u32,
+) -> Option<String> {
+    let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+            size: std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+            adapterId: adapter_id,
+            id: target_id,
+        },
+        ..Default::default()
+    };
+
+    let result = unsafe { DisplayConfigGetDeviceInfo(&mut target.header) };
+    if result != ERROR_SUCCESS.0 as i32 {
+        return None;
+    }
+
+    non_empty_wide_array_to_string(&target.monitorFriendlyDeviceName)
+}
+
+fn enum_display_monitor_name(display_id: &str) -> Option<String> {
+    let display_name = to_wide_null(display_id);
+    let mut monitor_index = 0;
+
+    loop {
+        let mut monitor = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+
+        let ok = unsafe {
+            EnumDisplayDevicesW(
+                PCWSTR(display_name.as_ptr()),
+                monitor_index,
+                &mut monitor,
+                0,
+            )
+        };
+        if !ok.as_bool() {
+            return None;
+        }
+
+        if monitor.StateFlags & DISPLAY_DEVICE_ACTIVE != 0 {
+            if let Some(name) = non_empty_wide_array_to_string(&monitor.DeviceString) {
+                return Some(name);
+            }
+        }
+
+        monitor_index += 1;
+    }
+}
+
+fn display_name(id: &str, monitor_name: Option<&str>, adapter_name: &str) -> String {
+    monitor_name
+        .filter(|name| !name.eq_ignore_ascii_case(adapter_name))
+        .or_else(|| (!adapter_name.is_empty()).then_some(adapter_name))
+        .unwrap_or(id)
+        .to_string()
 }
 
 fn with_display_dc<T>(
@@ -208,6 +349,11 @@ fn wide_array_to_string(raw: &[u16]) -> String {
         .position(|value| *value == 0)
         .unwrap_or(raw.len());
     String::from_utf16_lossy(&raw[..end])
+}
+
+fn non_empty_wide_array_to_string(raw: &[u16]) -> Option<String> {
+    let value = wide_array_to_string(raw);
+    (!value.trim().is_empty()).then_some(value)
 }
 
 fn to_wide_null(value: &str) -> Vec<u16> {
