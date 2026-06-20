@@ -1,81 +1,58 @@
 # GammaDeck
 
-GammaDeck is a modern Gamma Panel-inspired tool for switching display gamma profiles with global hotkeys.
+GammaDeck is a lightweight Windows app for switching display gamma profiles with global hotkeys.
 
-It is built as a lightweight Tauri desktop app with a Rust native core and a React settings panel. The current MVP focuses on explicit per-display profiles and fast profile switching.
+It is designed for people who use multiple monitors, switch between different lighting conditions, or want fast per-display gamma adjustments without opening Windows display settings.
 
-## Status
-
-This repository currently contains the first scaffolded MVP:
-
-- Tauri 2 desktop shell
-- React + TypeScript UI
-- Rust profile/config model
-- Global hotkey registration
-- Tray menu
-- Gamma ramp generation
-- Windows GDI gamma backend
-- macOS/Linux unsupported no-op backend
-
-Real gamma changes are only implemented for Windows. macOS and Linux can run the app shell, but gamma apply/reset actions report unsupported behavior for now.
-
-## Windows Portable Release
-
-GammaDeck is currently distributed as a portable Windows zip:
-
-1. Download `GammaDeck-windows-x64-portable.zip` from a GitHub release.
-2. Unzip it anywhere.
-3. Run `GammaDeck.exe` directly.
-
-There is no installer at this stage. This keeps the package simple and avoids requiring administrator access for the app itself.
-
-### WebView2 Runtime Requirement
-
-GammaDeck is built with Tauri, so the Windows build uses Microsoft Edge WebView2 Runtime for the app window. Most Windows 10/11 systems already have WebView2 installed.
-
-If WebView2 Runtime is missing, GammaDeck may fail before the UI appears. Depending on the machine, Windows/Tauri may show a WebView2-related startup error, a "failed to create webview" error, or the app may close immediately.
-
-Install Microsoft Edge WebView2 Runtime from Microsoft, then run GammaDeck again:
-
-- WebView2 Runtime download page: <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>
-- For normal online installs, use the Evergreen Bootstrapper.
-- For offline machines, use the Evergreen Standalone Installer for your CPU architecture, usually x64.
-
-Microsoft's WebView2 distribution guidance recommends checking for the runtime before creating a WebView2, and either installing it or redirecting users to the Microsoft download page. GammaDeck does not currently ship its own WebView2 installer; a native pre-launch check may be added later if missing-runtime reports become common.
+![GammaDeck runtime screenshot](docs/assets/gammadeck-runtime.png)
 
 ## Features
 
-- Manage multiple gamma profiles.
-- Bind each profile to one explicit target display.
-- Save linked RGB or per-channel RGB settings.
-- Adjust gamma, brightness-like offset, and contrast-like slope.
-- Preview the generated LUT curve.
-- Apply profiles from the UI.
-- Switch profiles with global hotkeys.
-- Restore the startup gamma ramp captured by the app.
-- Apply a Linear LUT reset separately.
-- Keep the app available from the tray.
+- Multi-display support: choose which monitor a profile applies to.
+- Multiple profiles: create different presets for work, games, night use, or specific monitors.
+- Global hotkeys: switch profiles instantly from anywhere.
+- Linked RGB mode: adjust gamma, brightness, and contrast together.
+- Per-channel RGB mode: fine-tune red, green, and blue independently.
+- LUT preview: see the generated curve before applying it.
+- Reset controls: restore the gamma ramp captured when GammaDeck started, or apply a Linear LUT reset.
+- Tray support: keep GammaDeck available in the background.
+- Portable config: release builds keep `GammaDeck.config.json` beside `GammaDeck.exe`.
 
-## Non-Goals
+## Download And Run
 
-GammaDeck v1 intentionally does not include:
+GammaDeck is distributed as a portable Windows zip.
 
-- Physical monitor brightness or contrast control
-- DDC/CI
-- HDR support
-- ICC/WCS color profile management
-- One-click apply-to-all-displays
-- Automatic current-display detection
-- Formal color calibration workflows
+1. Download `GammaDeck-windows-x64-portable.zip` from a GitHub release.
+2. Unzip it anywhere.
+3. Run `GammaDeck.exe`.
 
-## Tech Stack
+There is no installer. Profiles and hotkeys are saved in the same portable folder as the app.
 
-- Rust
-- Tauri 2
-- React
-- TypeScript
-- Vite
-- Windows GDI APIs for gamma ramp control
+## WebView2 Requirement
+
+GammaDeck uses Tauri, so it needs Microsoft Edge WebView2 Runtime on Windows. Most Windows 10/11 systems already include it.
+
+If the app does not open, or Windows shows a WebView2-related startup error, install WebView2 Runtime from Microsoft:
+
+<https://developer.microsoft.com/en-us/microsoft-edge/webview2/>
+
+Use the Evergreen Bootstrapper for normal installs, or the Evergreen Standalone Installer for offline machines.
+
+## How To Use
+
+1. Select or create a profile from the left sidebar.
+2. Choose the target display.
+3. Set a global hotkey, such as `control+alt+Numpad0`.
+4. Adjust gamma, brightness, and contrast.
+5. Use `Linked` mode for simple tuning, or `RGB` mode for per-channel correction.
+6. GammaDeck applies the profile when you select it or press its hotkey.
+
+## Current Limitations
+
+- Real gamma changes are currently implemented only on Windows.
+- macOS and Linux can run the app shell, but gamma apply/reset actions are unsupported.
+- GammaDeck adjusts the GPU gamma ramp only. It does not change physical monitor brightness, DDC/CI settings, HDR behavior, or ICC/WCS color profiles.
+- Profiles target one display at a time.
 
 ## Development
 
@@ -85,7 +62,13 @@ Install dependencies:
 pnpm install
 ```
 
-Run static/type checks:
+Run the app locally:
+
+```bash
+pnpm tauri dev
+```
+
+Run checks:
 
 ```bash
 pnpm exec tsc --noEmit
@@ -94,62 +77,10 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-Run the app during local development:
-
-```bash
-pnpm tauri dev
-```
-
 Build a portable Windows executable:
 
 ```bash
 pnpm tauri build --no-bundle
 ```
 
-The portable executable is written to `src-tauri/target/release/gammadeck.exe` on Windows. The GitHub release workflow packages it as `GammaDeck.exe` inside `GammaDeck-windows-x64-portable.zip`.
-
-Release builds store `GammaDeck.config.json` and WebView2 data beside `GammaDeck.exe` so the portable folder is self-contained. Development builds use Tauri's app config directory to avoid mixing local dev state into build output.
-
-## Architecture
-
-The app is split into three main areas:
-
-- `src/`: React UI, Tauri command calls, profile editor controls, LUT preview.
-- `src-tauri/src/`: Rust app state, config storage, gamma curve generation, Tauri commands, tray, hotkey registration.
-- `src-tauri/src/backend/`: Platform gamma backends.
-
-The key Rust backend boundary is `DisplayGammaBackend`, which provides:
-
-- `list_displays`
-- `set_ramp`
-- `restore_startup_ramp`
-- `set_linear_ramp`
-
-Windows uses the legacy GDI gamma ramp APIs through a platform-gated backend. Other platforms return explicit unsupported errors so the app can stay cross-platform without pretending gamma control works everywhere.
-
-## Windows Backend Notes
-
-The Windows backend uses legacy GDI gamma ramp APIs because they are practical for instant hotkey-driven gamma switching:
-
-- `EnumDisplayDevicesW`
-- `CreateDCW`
-- `GetDeviceGammaRamp`
-- `SetDeviceGammaRamp`
-- `DeleteDC`
-
-On startup/display enumeration, GammaDeck captures the current ramp for each supported display. Reset restores that captured startup ramp rather than writing a fixed hardcoded value.
-
-The generated ramp is clamped conservatively before it is sent to Windows.
-
-## Profile Model
-
-Each profile contains:
-
-- Target display id
-- Gamma
-- Brightness-like offset
-- Contrast-like slope
-- Linked or per-channel RGB settings
-- Optional global hotkey
-
-Profiles are persisted as `GammaDeck.config.json`. Release builds write it beside `GammaDeck.exe`; development builds write it to Tauri's app config directory.
+The executable is written to `src-tauri/target/release/gammadeck.exe` on Windows.
