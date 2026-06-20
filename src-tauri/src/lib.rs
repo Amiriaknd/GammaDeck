@@ -20,9 +20,8 @@ use gamma_curve::generate_ramp;
 use model::{AppConfig, ApplyResult, DisplayInfo, Profile};
 use serde::Serialize;
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, State, WebviewWindowBuilder,
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, State, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -366,46 +365,21 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, name: &str) -> AppResult<MutexGuard<'a, T>> 
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-    let reset = MenuItem::with_id(app, "reset", "Reset Selected Display", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &reset, &quit])?;
-
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or("default window icon is unavailable")?;
     TrayIconBuilder::new()
+        .icon(icon)
         .tooltip("GammaDeck")
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
             }
-            "reset" => {
-                let state = app.state::<AppState>();
-                let display_id = lock(&state.active_display_id, "active display")
-                    .ok()
-                    .and_then(|guard| guard.clone());
-
-                if let Some(display_id) = display_id {
-                    let result = {
-                        let mut gamma = match lock(&state.gamma, "gamma backend") {
-                            Ok(gamma) => gamma,
-                            Err(error) => {
-                                let _ = app.emit("profile-apply-error", error.to_string());
-                                return;
-                            }
-                        };
-                        gamma.restore_startup_ramp(&display_id)
-                    };
-
-                    if let Err(error) = result {
-                        let _ = app.emit("profile-apply-error", error.to_string());
-                    }
-                }
-            }
-            "quit" => app.exit(0),
-            _ => {}
         })
         .build(app)?;
 
@@ -415,6 +389,15 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            if matches!(event, WindowEvent::Resized(_)) && window.is_minimized().unwrap_or(false) {
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             setup_main_window(app)?;
 
@@ -451,6 +434,14 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run GammaDeck");
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 fn setup_main_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
