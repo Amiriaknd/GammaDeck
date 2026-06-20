@@ -13,7 +13,7 @@ pub struct ConfigStore {
 impl ConfigStore {
     pub fn new(config_dir: PathBuf) -> Self {
         Self {
-            path: config_dir.join("config.json"),
+            path: config_dir.join("GammaDeck.config.json"),
         }
     }
 

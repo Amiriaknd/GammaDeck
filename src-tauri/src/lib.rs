@@ -8,6 +8,7 @@ const DEFAULT_PROFILE_ID: &str = "default";
 
 use std::{
     collections::HashSet,
+    path::PathBuf,
     str::FromStr,
     sync::{Mutex, MutexGuard},
 };
@@ -415,7 +416,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            let config_dir = app.path().app_config_dir()?;
+            let config_dir = config_dir(app)?;
             let config_store = ConfigStore::new(config_dir);
             let config = config_store.load()?;
             let state = AppState {
@@ -448,4 +449,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run GammaDeck");
+}
+
+fn config_dir(_app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    #[cfg(debug_assertions)]
+    {
+        Ok(_app.path().app_config_dir()?)
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let exe_path = std::env::current_exe()?;
+        exe_path
+            .parent()
+            .map(PathBuf::from)
+            .ok_or_else(|| "executable directory is unavailable".into())
+    }
 }

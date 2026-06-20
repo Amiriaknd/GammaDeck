@@ -108,6 +108,8 @@ pnpm tauri build --no-bundle
 
 The portable executable is written to `src-tauri/target/release/gammadeck.exe` on Windows. The GitHub release workflow packages it as `GammaDeck.exe` inside `GammaDeck-windows-x64-portable.zip`.
 
+Release builds store `GammaDeck.config.json` beside `GammaDeck.exe` so the portable folder is self-contained. Development builds use Tauri's app config directory to avoid mixing local dev state into build output.
+
 ## Architecture
 
 The app is split into three main areas:
