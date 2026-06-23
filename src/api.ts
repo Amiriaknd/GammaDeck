@@ -6,6 +6,10 @@ export const api = {
   loadConfig: () => invoke<AppConfig>("load_config"),
   saveProfile: (profile: Profile) => invoke<AppConfig>("save_profile", { profile }),
   deleteProfile: (profileId: string) => invoke<AppConfig>("delete_profile", { profileId }),
+  updateDisplayBaseline: (displayId: string) =>
+    invoke<AppConfig>("update_display_baseline", { displayId }),
+  resetDisplayBaseline: (displayId: string, target: "initial" | "neutral") =>
+    invoke<AppConfig>("reset_display_baseline", { displayId, target }),
   applyProfile: (profileId: string) => invoke<ApplyResult>("apply_profile", { profileId }),
   applyDraftProfile: (profile: Profile) =>
     invoke<ApplyResult>("apply_draft_profile", { profile }),

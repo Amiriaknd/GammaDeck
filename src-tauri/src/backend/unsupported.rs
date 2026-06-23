@@ -22,6 +22,10 @@ impl DisplayGammaBackend for UnsupportedBackend {
         }])
     }
 
+    fn current_ramp(&mut self, _display_id: &str) -> AppResult<GammaRamp> {
+        Err(AppError::UnsupportedPlatform)
+    }
+
     fn set_ramp(&mut self, _display_id: &str, _ramp: &GammaRamp) -> AppResult<()> {
         Err(AppError::UnsupportedPlatform)
     }

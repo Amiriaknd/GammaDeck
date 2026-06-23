@@ -14,7 +14,9 @@ It is designed for people who use multiple monitors, switch between different li
 - Linked RGB mode: adjust gamma, brightness, and contrast together.
 - Per-channel RGB mode: fine-tune red, green, and blue independently.
 - LUT preview: see the generated curve before applying it.
-- Reset controls: restore the gamma ramp captured when GammaDeck started, or apply a Linear LUT reset.
+- Baseline-aware adjustments: GammaDeck captures the current display ramp and applies profiles relative to that baseline instead of blindly replacing the user's existing color state.
+- Baseline controls: update the current baseline, reset it to the first-run baseline, or reset it to a neutral baseline.
+- Reset control: return the current profile's sliders to neutral values.
 - Tray support: keep GammaDeck available in the background.
 - Portable config: release builds keep `GammaDeck.config.json` beside `GammaDeck.exe`.
 
@@ -47,11 +49,32 @@ Use the Evergreen Bootstrapper for normal installs, or the Evergreen Standalone 
 5. Use `Linked` mode for simple tuning, or `RGB` mode for per-channel correction.
 6. GammaDeck applies the profile when you select it or press its hotkey.
 
+## Baselines And Color Calibration
+
+GammaDeck uses the GPU gamma ramp. Windows display calibration, ICC/WCS profile loaders, and GPU control panels can also affect this ramp. To avoid wiping out the user's existing color setup, GammaDeck treats a saved baseline ramp as the reference point for each display.
+
+On first run, or when upgrading from an older config that has no saved baseline, GammaDeck reads the current ramp for each supported display and stores it as both:
+
+- The **first-run baseline**: the earliest reference GammaDeck has saved for that display.
+- The **current baseline**: the reference used when applying profiles.
+
+With this model, `Gamma 1.00`, `Brightness 0.00`, and `Contrast 1.00` mean "leave the saved baseline unchanged." Profile adjustments are applied on top of the current baseline, so existing Windows calibration or GPU control panel color changes are preserved as long as they were present when the baseline was captured.
+
+The **Baseline** button saves the display's current ramp as the new current baseline. If a GammaDeck profile is visible when you do this, that visible result becomes part of the baseline. GammaDeck resets the current profile to neutral afterward so the same adjustment does not stack again.
+
+The small menu next to **Baseline** provides two reset options:
+
+- **Reset to first-run baseline** restores the current baseline to the first ramp GammaDeck saved for that display. This is useful if the baseline has been updated and you want to go back to GammaDeck's original reference.
+- **Reset to neutral baseline** replaces the current baseline with a plain `0 -> 65535` ramp. This makes neutral values mean no extra baseline correction from GammaDeck, but it may ignore Windows calibration or GPU control panel adjustments.
+
+Changing the baseline changes the reference point for every profile targeting that display. Other profiles keep their saved slider values, but they may need to be manually readjusted after a baseline update or reset.
+
 ## Current Limitations
 
 - Real gamma changes are currently implemented only on Windows.
 - macOS and Linux can run the app shell, but gamma apply/reset actions are unsupported.
-- GammaDeck adjusts the GPU gamma ramp only. It does not change physical monitor brightness, DDC/CI settings, HDR behavior, or ICC/WCS color profiles.
+- GammaDeck adjusts the GPU gamma ramp only. It does not change physical monitor brightness, DDC/CI settings, HDR behavior, or ICC/WCS color profile files.
+- Other apps, GPU drivers, Windows display events, HDR mode changes, and color calibration tools may overwrite the active gamma ramp after GammaDeck applies a profile.
 - Profiles target one display at a time.
 
 ## Development

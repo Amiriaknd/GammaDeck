@@ -16,6 +16,10 @@ pub struct DisplayInfo {
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub version: u32,
+    #[serde(default)]
+    pub initial_display_baselines: Vec<DisplayBaseline>,
+    #[serde(default)]
+    pub display_baselines: Vec<DisplayBaseline>,
     pub profiles: Vec<Profile>,
     pub selected_profile_id: Option<String>,
 }
@@ -23,11 +27,20 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
+            initial_display_baselines: Vec::new(),
+            display_baselines: Vec::new(),
             profiles: Vec::new(),
             selected_profile_id: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayBaseline {
+    pub display_id: String,
+    pub ramp: GammaRamp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +94,7 @@ impl Default for ChannelSettings {
 impl ChannelSettings {
     pub fn clamped(self) -> Self {
         Self {
-            gamma: self.gamma.clamp(0.5, 2.5),
+            gamma: self.gamma.clamp(0.25, 2.5),
             brightness: self.brightness.clamp(-0.35, 0.35),
             contrast: self.contrast.clamp(0.5, 1.75),
         }
@@ -108,6 +121,10 @@ impl GammaRamp {
             green: values.clone(),
             blue: values,
         }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.red.len() == RAMP_SIZE && self.green.len() == RAMP_SIZE && self.blue.len() == RAMP_SIZE
     }
 }
 

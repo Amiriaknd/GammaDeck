@@ -25,8 +25,21 @@ export interface Profile {
   hotkey: string | null;
 }
 
+export interface GammaRamp {
+  red: number[];
+  green: number[];
+  blue: number[];
+}
+
+export interface DisplayBaseline {
+  displayId: string;
+  ramp: GammaRamp;
+}
+
 export interface AppConfig {
   version: number;
+  initialDisplayBaselines: DisplayBaseline[];
+  displayBaselines: DisplayBaseline[];
   profiles: Profile[];
   selectedProfileId: string | null;
 }

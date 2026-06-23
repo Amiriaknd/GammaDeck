@@ -56,6 +56,10 @@ impl DisplayGammaBackend for WindowsGdiBackend {
         Ok(displays)
     }
 
+    fn current_ramp(&mut self, display_id: &str) -> AppResult<GammaRamp> {
+        with_display_dc(display_id, |dc| read_ramp(dc))
+    }
+
     fn set_ramp(&mut self, display_id: &str, ramp: &GammaRamp) -> AppResult<()> {
         self.capture_startup_ramp(display_id)?;
         with_display_dc(display_id, |dc| {

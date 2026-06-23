@@ -1,9 +1,10 @@
-import { Plus, RotateCcw } from "lucide-react";
+import { ChevronDown, Plus, RotateCcw, Save } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { AppConfig, ApplyResult, ChannelSettings, DisplayInfo, Profile } from "./types";
 
 const DEFAULT_PROFILE_ID = "default";
+type BaselineDialogTarget = "current" | "initial" | "neutral";
 
 const emptyChannel: ChannelSettings = {
   gamma: 1,
@@ -72,7 +73,13 @@ function sortedProfiles(profiles: Profile[]) {
 
 export default function App() {
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
-  const [config, setConfig] = useState<AppConfig>({ version: 1, profiles: [], selectedProfileId: null });
+  const [config, setConfig] = useState<AppConfig>({
+    version: 2,
+    initialDisplayBaselines: [],
+    displayBaselines: [],
+    profiles: [],
+    selectedProfileId: null,
+  });
   const [draft, setDraft] = useState<Profile>(defaultProfile());
   const [status, setStatus] = useState("Loading");
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +87,8 @@ export default function App() {
   const [dirtyDraft, setDirtyDraft] = useState(false);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [baselineDialogTarget, setBaselineDialogTarget] = useState<BaselineDialogTarget | null>(null);
+  const [isBaselineMenuOpen, setIsBaselineMenuOpen] = useState(false);
   const bootedRef = useRef(false);
   const autosaveRevisionRef = useRef(0);
   const configRef = useRef(config);
@@ -327,6 +336,35 @@ export default function App() {
     setStatus("Profile reset");
   }
 
+  async function updateBaseline(target: BaselineDialogTarget) {
+    if (!selectedDisplay?.isSupported) {
+      return;
+    }
+
+    autosaveRevisionRef.current += 1;
+    setIsBusy(true);
+    try {
+      const baselineConfig =
+        target === "current"
+          ? await api.updateDisplayBaseline(selectedDisplay.id)
+          : await api.resetDisplayBaseline(selectedDisplay.id, target);
+      const neutralProfile = neutralizeProfile({ ...cloneProfile(draft), targetDisplayId: selectedDisplay.id });
+      const saved = neutralProfile.id ? await api.saveProfile(neutralProfile) : baselineConfig;
+      await api.applyDraftProfile(neutralProfile);
+      setConfig(saved);
+      setDraft(neutralProfile);
+      setDirtyDraft(false);
+      setStatus("Baseline updated - current profile neutralized");
+      setError(null);
+      setBaselineDialogTarget(null);
+      setIsBaselineMenuOpen(false);
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function startRename(profile: Profile) {
     setEditingProfileId(profile.id);
     setEditingName(profile.name);
@@ -473,11 +511,113 @@ export default function App() {
             <RotateCcw size={15} />
             Reset
           </button>
+          <div className="baseline-actions">
+            <button
+              className="primary-button baseline-main-button"
+              onClick={() => setBaselineDialogTarget("current")}
+              disabled={isBusy || !selectedDisplay?.isSupported}
+            >
+              <Save size={15} />
+              Baseline
+            </button>
+            <button
+              className="primary-button baseline-menu-button"
+              onClick={() => setIsBaselineMenuOpen((current) => !current)}
+              disabled={isBusy || !selectedDisplay?.isSupported}
+              title="Baseline reset options"
+            >
+              <ChevronDown size={14} />
+            </button>
+            {isBaselineMenuOpen ? (
+              <div className="baseline-menu">
+                <button type="button" onClick={() => setBaselineDialogTarget("initial")}>
+                  Reset to first-run baseline
+                </button>
+                <button type="button" onClick={() => setBaselineDialogTarget("neutral")}>
+                  Reset to neutral baseline
+                </button>
+              </div>
+            ) : null}
+          </div>
           <span className="status-line">{statusText(status, dirtyDraft, selectedDisplay)}</span>
         </div>
       </section>
+
+      {baselineDialogTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="baseline-title">
+            <h2 id="baseline-title">{baselineDialogTitle(baselineDialogTarget)}</h2>
+            {baselineDialogCopy(baselineDialogTarget).map((paragraph) => (
+              <p key={paragraph}>{paragraph}</p>
+            ))}
+            <div className="modal-actions">
+              <button className="ghost-button" onClick={() => setBaselineDialogTarget(null)} disabled={isBusy}>
+                Cancel
+              </button>
+              <button
+                className="warn-button"
+                onClick={() => updateBaseline(baselineDialogTarget)}
+                disabled={isBusy || !selectedDisplay?.isSupported}
+              >
+                {baselineDialogConfirmLabel(baselineDialogTarget)}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
+}
+
+function baselineDialogTitle(target: BaselineDialogTarget) {
+  if (target === "initial") {
+    return "Reset baseline to first-run";
+  }
+
+  if (target === "neutral") {
+    return "Reset baseline to neutral";
+  }
+
+  return "Update baseline";
+}
+
+function baselineDialogConfirmLabel(target: BaselineDialogTarget) {
+  if (target === "initial") {
+    return "Reset to first-run";
+  }
+
+  if (target === "neutral") {
+    return "Reset to neutral";
+  }
+
+  return "Update baseline";
+}
+
+function baselineDialogCopy(target: BaselineDialogTarget) {
+  if (target === "initial") {
+    return [
+      "GammaDeck will replace the current baseline for this display with the first-run baseline captured when this app first recorded this display.",
+      "This is meant to restore the original reference GammaDeck saved before later baseline updates. For upgraded older configs, GammaDeck uses the earliest existing saved baseline it can migrate.",
+      "The current profile will be reset to neutral so it does not stack again. Other profiles for this display keep their saved values and will apply relative to the restored baseline.",
+      "Because the reference point changes, you may need to manually readjust other profiles for this display.",
+    ];
+  }
+
+  if (target === "neutral") {
+    return [
+      "GammaDeck will replace the current baseline for this display with a plain neutral ramp from 0 to 65535.",
+      "This makes Gamma 1.00, Brightness 0.00, and Contrast 1.00 mean no extra LUT adjustment from GammaDeck, and may ignore Windows calibration or GPU control panel color changes.",
+      "The current profile will be reset to neutral. Other profiles for this display keep their saved values and will apply relative to the neutral baseline.",
+      "Because the reference point changes, you may need to manually readjust other profiles for this display.",
+    ];
+  }
+
+  return [
+    "GammaDeck will save the current display gamma ramp as the baseline reference for this display. After this, Gamma 1.00, Brightness 0.00, and Contrast 1.00 will mean this exact current display state.",
+    "If a GammaDeck profile is currently applied, that visible effect will become part of the new baseline, and the current profile will be reset to neutral so it does not stack again.",
+    "Other profiles for this display will keep their saved values and will be applied relative to the new baseline. The previous current baseline in GammaDeck will be replaced.",
+    "Because the reference point changes, you may need to manually readjust other profiles for this display.",
+  ];
 }
 
 function ProfileRow({
@@ -585,7 +725,7 @@ function SliderGroup({
 }) {
   return (
     <div className="slider-stack">
-      <RangeRow label="Gamma" min={0.5} max={2.5} step={0.01} value={settings.gamma} onChange={(value) => onChange("gamma", value)} />
+      <RangeRow label="Gamma" min={0.25} max={2.5} step={0.01} value={settings.gamma} onChange={(value) => onChange("gamma", value)} />
       <RangeRow label="Brightness" min={-0.35} max={0.35} step={0.01} value={settings.brightness} onChange={(value) => onChange("brightness", value)} />
       <RangeRow label="Contrast" min={0.5} max={1.75} step={0.01} value={settings.contrast} onChange={(value) => onChange("contrast", value)} />
     </div>
@@ -606,7 +746,7 @@ function ChannelColumn({
   return (
     <div className={`channel-column ${name}`}>
       <h2>{label}</h2>
-      <RangeRow label="Gamma" min={0.5} max={2.5} step={0.01} value={settings.gamma} onChange={(value) => onChange("gamma", value, name)} />
+      <RangeRow label="Gamma" min={0.25} max={2.5} step={0.01} value={settings.gamma} onChange={(value) => onChange("gamma", value, name)} />
       <RangeRow label="Brightness" min={-0.35} max={0.35} step={0.01} value={settings.brightness} onChange={(value) => onChange("brightness", value, name)} />
       <RangeRow label="Contrast" min={0.5} max={1.75} step={0.01} value={settings.contrast} onChange={(value) => onChange("contrast", value, name)} />
     </div>
@@ -813,10 +953,10 @@ function LutPreview({ profile }: { profile: Profile }) {
 function curvePath(settings: ChannelSettings) {
   const points = Array.from({ length: 32 }, (_, index) => {
     const x = index / 31;
-    const gamma = Math.min(2.5, Math.max(0.5, settings.gamma));
+    const gamma = Math.min(2.5, Math.max(0.25, settings.gamma));
     const brightness = Math.min(0.35, Math.max(-0.35, settings.brightness));
     const contrast = Math.min(1.75, Math.max(0.5, settings.contrast));
-    const y = Math.min(0.98, Math.max(0.02, (Math.pow(x, 1 / gamma) - 0.5) * contrast + 0.5 + brightness));
+    const y = Math.min(1, Math.max(0, (Math.pow(x, 1 / gamma) - 0.5) * contrast + 0.5 + brightness));
     return [8 + x * 152, 160 - y * 152];
   });
 

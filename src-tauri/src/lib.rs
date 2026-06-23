@@ -17,7 +17,7 @@ use backend::{create_backend, DisplayGammaBackend};
 use config_store::ConfigStore;
 use error::{AppError, AppResult};
 use gamma_curve::generate_ramp;
-use model::{AppConfig, ApplyResult, DisplayInfo, Profile};
+use model::{AppConfig, ApplyResult, DisplayBaseline, DisplayInfo, GammaRamp, Profile};
 use serde::Serialize;
 use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
@@ -34,8 +34,12 @@ pub struct AppState {
 
 #[tauri::command]
 fn list_displays(state: State<'_, AppState>) -> AppResult<Vec<DisplayInfo>> {
-    let mut gamma = lock(&state.gamma, "gamma backend")?;
-    gamma.list_displays()
+    let displays = {
+        let mut gamma = lock(&state.gamma, "gamma backend")?;
+        gamma.list_displays()?
+    };
+    ensure_display_baselines(&state, &displays)?;
+    Ok(displays)
 }
 
 #[tauri::command]
@@ -107,6 +111,58 @@ fn delete_profile(
 }
 
 #[tauri::command]
+fn update_display_baseline(state: State<'_, AppState>, display_id: String) -> AppResult<AppConfig> {
+    let display_id = display_id.trim().to_string();
+    if display_id.is_empty() {
+        return Err(AppError::TargetDisplayRequired);
+    }
+
+    let ramp = {
+        let mut gamma = lock(&state.gamma, "gamma backend")?;
+        gamma.current_ramp(&display_id)?
+    };
+
+    let mut config = lock(&state.config, "configuration")?;
+    upsert_display_baseline(&mut config, display_id, ramp);
+    config.version = config.version.max(2);
+    state.config_store.save(&config)?;
+    Ok(config.clone())
+}
+
+#[tauri::command]
+fn reset_display_baseline(
+    state: State<'_, AppState>,
+    display_id: String,
+    target: String,
+) -> AppResult<AppConfig> {
+    let display_id = display_id.trim().to_string();
+    if display_id.is_empty() {
+        return Err(AppError::TargetDisplayRequired);
+    }
+
+    let ramp = match target.as_str() {
+        "initial" => {
+            let config = lock(&state.config, "configuration")?;
+            initial_baseline_for_display(&config, &display_id).ok_or_else(|| {
+                AppError::Backend("first-run baseline is unavailable for this display".to_string())
+            })?
+        }
+        "neutral" => GammaRamp::linear(),
+        _ => {
+            return Err(AppError::Backend(format!(
+                "unknown baseline reset target: {target}"
+            )))
+        }
+    };
+
+    let mut config = lock(&state.config, "configuration")?;
+    upsert_display_baseline(&mut config, display_id, ramp);
+    config.version = config.version.max(2);
+    state.config_store.save(&config)?;
+    Ok(config.clone())
+}
+
+#[tauri::command]
 fn apply_profile(state: State<'_, AppState>, profile_id: String) -> AppResult<ApplyResult> {
     apply_profile_by_id(&state, &profile_id)
 }
@@ -114,7 +170,11 @@ fn apply_profile(state: State<'_, AppState>, profile_id: String) -> AppResult<Ap
 #[tauri::command]
 fn apply_draft_profile(state: State<'_, AppState>, profile: Profile) -> AppResult<ApplyResult> {
     let normalized = normalize_profile(profile)?;
-    apply_profile_value(&state, &normalized, None)
+    let baseline = {
+        let config = lock(&state.config, "configuration")?;
+        baseline_for_display(&config, &normalized.target_display_id)
+    };
+    apply_profile_value(&state, &normalized, baseline.as_ref(), None)
 }
 
 #[tauri::command]
@@ -166,17 +226,24 @@ fn exit_app(app: AppHandle) {
 }
 
 fn apply_profile_by_id(state: &AppState, profile_id: &str) -> AppResult<ApplyResult> {
-    let profile = {
+    let (profile, baseline) = {
         let config = lock(&state.config, "configuration")?;
-        config
+        let profile = config
             .profiles
             .iter()
             .find(|profile| profile.id == profile_id)
             .cloned()
-            .ok_or(AppError::ProfileNotFound)?
+            .ok_or(AppError::ProfileNotFound)?;
+        let baseline = baseline_for_display(&config, &profile.target_display_id);
+        (profile, baseline)
     };
 
-    let result = apply_profile_value(state, &profile, Some(profile_id.to_string()))?;
+    let result = apply_profile_value(
+        state,
+        &profile,
+        baseline.as_ref(),
+        Some(profile_id.to_string()),
+    )?;
     remember_selected_profile(state, profile_id)?;
     Ok(result)
 }
@@ -184,13 +251,15 @@ fn apply_profile_by_id(state: &AppState, profile_id: &str) -> AppResult<ApplyRes
 fn apply_profile_value(
     state: &AppState,
     profile: &Profile,
+    baseline: Option<&GammaRamp>,
     profile_id: Option<String>,
 ) -> AppResult<ApplyResult> {
     if profile.target_display_id.trim().is_empty() {
         return Err(AppError::TargetDisplayRequired);
     }
 
-    let ramp = generate_ramp(profile);
+    let fallback = GammaRamp::linear();
+    let ramp = generate_ramp(profile, baseline.unwrap_or(&fallback));
     let mut gamma = lock(&state.gamma, "gamma backend")?;
     gamma.set_ramp(&profile.target_display_id, &ramp)?;
 
@@ -211,6 +280,114 @@ fn remember_selected_profile(state: &AppState, profile_id: &str) -> AppResult<()
 
     config.selected_profile_id = Some(profile_id.to_string());
     state.config_store.save(&config)
+}
+
+fn ensure_display_baselines(state: &AppState, displays: &[DisplayInfo]) -> AppResult<()> {
+    let baseline_jobs = {
+        let config = lock(&state.config, "configuration")?;
+        displays
+            .iter()
+            .filter(|display| display.is_supported)
+            .filter_map(|display| {
+                let initial = initial_baseline_for_display(&config, &display.id);
+                let current = baseline_for_display(&config, &display.id);
+                (initial.is_none() || current.is_none()).then_some((
+                    display.id.clone(),
+                    initial,
+                    current,
+                ))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if baseline_jobs.is_empty() {
+        return Ok(());
+    }
+
+    let mut initial_baselines = Vec::new();
+    let mut current_baselines = Vec::new();
+    let mut displays_to_read = Vec::new();
+    for (display_id, initial, current) in baseline_jobs {
+        if initial.is_none() {
+            if let Some(ramp) = current.clone() {
+                initial_baselines.push(DisplayBaseline {
+                    display_id: display_id.clone(),
+                    ramp,
+                });
+            } else {
+                displays_to_read.push(display_id.clone());
+            }
+        }
+
+        if current.is_none() && !displays_to_read.iter().any(|id| id == &display_id) {
+            displays_to_read.push(display_id);
+        }
+    }
+
+    {
+        let mut gamma = lock(&state.gamma, "gamma backend")?;
+        for display_id in displays_to_read {
+            match gamma.current_ramp(&display_id) {
+                Ok(ramp) => {
+                    initial_baselines.push(DisplayBaseline {
+                        display_id: display_id.clone(),
+                        ramp: ramp.clone(),
+                    });
+                    current_baselines.push(DisplayBaseline { display_id, ramp });
+                }
+                Err(error) => dev_log(&format!("failed to capture baseline ramp: {error}")),
+            }
+        }
+    }
+
+    if initial_baselines.is_empty() && current_baselines.is_empty() {
+        return Ok(());
+    }
+
+    let mut config = lock(&state.config, "configuration")?;
+    for baseline in initial_baselines {
+        upsert_initial_display_baseline(&mut config, baseline.display_id, baseline.ramp);
+    }
+    for baseline in current_baselines {
+        upsert_display_baseline(&mut config, baseline.display_id, baseline.ramp);
+    }
+    config.version = config.version.max(2);
+    state.config_store.save(&config)
+}
+
+fn baseline_for_display(config: &AppConfig, display_id: &str) -> Option<GammaRamp> {
+    baseline_for_display_in(&config.display_baselines, display_id)
+}
+
+fn initial_baseline_for_display(config: &AppConfig, display_id: &str) -> Option<GammaRamp> {
+    baseline_for_display_in(&config.initial_display_baselines, display_id)
+}
+
+fn baseline_for_display_in(baselines: &[DisplayBaseline], display_id: &str) -> Option<GammaRamp> {
+    baselines
+        .iter()
+        .find(|baseline| baseline.display_id == display_id && baseline.ramp.is_valid())
+        .map(|baseline| baseline.ramp.clone())
+}
+
+fn upsert_display_baseline(config: &mut AppConfig, display_id: String, ramp: GammaRamp) {
+    upsert_baseline(&mut config.display_baselines, display_id, ramp);
+}
+
+fn upsert_initial_display_baseline(config: &mut AppConfig, display_id: String, ramp: GammaRamp) {
+    upsert_baseline(&mut config.initial_display_baselines, display_id, ramp);
+}
+
+fn upsert_baseline(baselines: &mut Vec<DisplayBaseline>, display_id: String, ramp: GammaRamp) {
+    if let Some(existing) = baselines
+        .iter_mut()
+        .find(|baseline| baseline.display_id == display_id)
+    {
+        existing.ramp = ramp;
+        return;
+    }
+
+    baselines.push(DisplayBaseline { display_id, ramp });
 }
 
 fn normalize_profile(profile: Profile) -> AppResult<Profile> {
@@ -415,6 +592,12 @@ pub fn run() {
 
             let handle = app.handle().clone();
             let state = handle.state::<AppState>();
+            if let Ok(displays) = {
+                let mut gamma = lock(&state.gamma, "gamma backend")?;
+                gamma.list_displays()
+            } {
+                ensure_display_baselines(&state, &displays)?;
+            }
             let config = lock(&state.config, "configuration")?.clone();
             register_hotkeys(&handle, &state, &config)?;
 
@@ -425,6 +608,8 @@ pub fn run() {
             load_config,
             save_profile,
             delete_profile,
+            update_display_baseline,
+            reset_display_baseline,
             apply_profile,
             apply_draft_profile,
             reset_display,
